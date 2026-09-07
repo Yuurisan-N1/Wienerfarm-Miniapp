@@ -186,6 +186,9 @@ def api_farm_start(session, init_data, h):
 def api_farm_claim(session, init_data, h):
     return post(session, f"{BASE}/wiener-api", h, {"action": "farm_claim", "initData": init_data})
 
+def api_daily_bio_check(session, init_data, h):
+    return post(session, f"{BASE}/wiener-api", h, {"action": "daily_bio_check", "initData": init_data})
+
 def api_daily_claim(session, init_data, h):
     return post(session, f"{BASE}/wiener-api", h, {"action": "daily_claim", "initData": init_data})
 
@@ -248,12 +251,12 @@ def process_account(init_data, proxy_str, device_cache):
 
     device = get_device_data(telegram_id, device_cache)
 
-    log_green(f"Account loaded for user {username}")
+    log_green(f"Account loaded for user {username} successfully.")
     log_green(f"Current balance is {balance:.2f} WIENER with a daily streak of {streak} days.")
 
     try:
         api_register_device(session, init_data, device, h)
-        log_green("Device fingerprint registered with the server.")
+        log_yellow("Device fingerprint registered with the server.")
     except Exception:
         log_yellow("Device registration encountered an issue, continuing anyway.")
 
@@ -270,14 +273,23 @@ def process_account(init_data, proxy_str, device_cache):
         log_red("Failed to start farm session due to a network error.")
 
     try:
-        if last_daily is None:
-            res = api_daily_claim(session, init_data, h)
-            if res.get("ok"):
-                reward = res["data"].get("reward", 0)
-                day = res["data"].get("day", 0)
-                log_green(f"Daily check-in claimed successfully for day {day} with reward {reward} WIENER.")
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date()
+        last_date = datetime.fromisoformat(last_daily.replace("Z", "+00:00")).date() if last_daily else None
+        already_claimed = last_date is not None and last_date >= today
+        if not already_claimed:
+            bio_res = api_daily_bio_check(session, init_data, h)
+            verified = bio_res.get("data", {}).get("verified", False)
+            if not verified:
+                log_yellow("Daily check-in not eligible, bio verification required.")
             else:
-                log_yellow("Daily check-in is not available at this time.")
+                res = api_daily_claim(session, init_data, h)
+                if res.get("ok"):
+                    reward = res["data"].get("reward", 0)
+                    day = res["data"].get("day", 0)
+                    log_green(f"Daily check-in claimed successfully for day {day} with reward {reward} WIENER.")
+                else:
+                    log_yellow("Daily check-in is not available at this time.")
         else:
             log_yellow("Daily check-in already completed for today, skipping.")
     except Exception:
@@ -297,7 +309,7 @@ def process_account(init_data, proxy_str, device_cache):
                             log_red("Ad spin start request was rejected by server.")
                             break
                         sid = res_start["data"]["session_id"]
-                        countdown(30, "Ad spin waiting")
+                        countdown(15, "Ad spin waiting")
                         res_claim = api_ad_spin_claim(session, init_data, sid, h)
                         if res_claim.get("ok"):
                             new_credits = res_claim["data"].get("ad_spin_credits", 0)
@@ -391,27 +403,35 @@ def process_account(init_data, proxy_str, device_cache):
                         break
 
                     if cd > 0:
-                        countdown(cd, "Ad cooldown remaining")
+                        countdown(cd + 5, "Ad cooldown remaining")
                         continue
 
                     try:
-                        start_res = api_ad_start(session, init_data, h)
-                        if not start_res.get("ok"):
-                            log_red("Ad start request was rejected by server.")
+                        start_res = None
+                        for _ in range(3):
+                            r = api_ad_start(session, init_data, h)
+                            if r.get("ok"):
+                                start_res = r
+                                break
+                            time.sleep(5)
+                        if not start_res:
+                            log_red("Ad start request was rejected by server after retries.")
                             break
                         sid = start_res["data"]["session_id"]
-                        countdown(30, "Ad waiting")
-                        complete_res = api_ad_complete(session, init_data, sid, h)
-                        if complete_res.get("ok"):
+                        countdown(15, "Ad waiting")
+                        complete_res = None
+                        for _ in range(3):
+                            r = api_ad_complete(session, init_data, sid, h)
+                            if r.get("ok"):
+                                complete_res = r
+                                break
+                            time.sleep(5)
+                        if complete_res:
                             reward = complete_res["data"].get("reward", 0)
                             remaining = complete_res["data"].get("remaining", 0)
-                            cd_next = complete_res["data"].get("cooldown_seconds", 0)
                             log_green(f"Ad completed with reward {reward} WIENER, {remaining} ads remaining.")
-                            if cd_next > 0:
-                                countdown(cd_next, "Ad cooldown remaining")
                         else:
-                            log_red("Ad complete request was rejected by server.")
-                            break
+                            log_red("Ad complete request was rejected by server after retries.")
                     except Exception:
                         log_red("Failed to process ad session due to a network error.")
                         break
@@ -449,7 +469,7 @@ def process_account(init_data, proxy_str, device_cache):
                         log_red("Withdrawal ad start was rejected by server.")
                         break
                     sid = start_res["data"]["session_id"]
-                    countdown(30, "Withdrawal ad waiting")
+                    countdown(15, "Withdrawal ad waiting")
                     claim_res = api_wd_ad_claim(session, init_data, sid, h)
                     if claim_res.get("ok"):
                         new_count = claim_res["data"].get("count", count)
