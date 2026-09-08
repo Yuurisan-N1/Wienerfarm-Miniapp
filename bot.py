@@ -251,7 +251,7 @@ def process_account(init_data, proxy_str, device_cache):
 
     device = get_device_data(telegram_id, device_cache)
 
-    log_green(f"Account loaded for user {username} successfully.")
+    log_green(f"Account loaded for user {username}")
     log_green(f"Current balance is {balance:.2f} WIENER with a daily streak of {streak} days.")
 
     try:
@@ -363,6 +363,17 @@ def process_account(init_data, proxy_str, device_cache):
                     claim_res = api_farm_claim(session, init_data, h)
                     if claim_res.get("ok"):
                         log_green("Farm reward claimed successfully.")
+                        new_claims = claim_res["data"].get("claims_today", 0)
+                        new_limit = claim_res["data"].get("daily_limit", daily_limit)
+                        if new_claims >= new_limit:
+                            log_yellow("Farm daily limit reached, not restarting.")
+                            break
+                        start_res = api_farm_start(session, init_data, h)
+                        if start_res.get("ok"):
+                            log_green("Farm session restarted successfully.")
+                        else:
+                            log_yellow("Farm could not be restarted.")
+                            break
                     else:
                         log_yellow("Farm is not ready to claim yet.")
                         break
